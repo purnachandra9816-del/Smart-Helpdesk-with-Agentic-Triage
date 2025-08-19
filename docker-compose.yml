@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  # MongoDB database
+  mongo:
+    image: mongo:7.0
+    container_name: helpdesk-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: helpdesk
+    volumes:
+      - mongo_data:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - helpdesk-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/helpdesk --quiet
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Backend API server
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: helpdesk-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      MONGO_URI: mongodb://mongo:27017/helpdesk
+      JWT_SECRET: ${JWT_SECRET:-your-super-secure-jwt-secret-change-in-production}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-your-super-secure-refresh-secret-change-in-production}
+      AUTO_CLOSE_ENABLED: ${AUTO_CLOSE_ENABLED:-true}
+      CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD:-0.78}
+      STUB_MODE: ${STUB_MODE:-true}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      FRONTEND_URL: http://localhost:5173
+    depends_on:
+      mongo:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - helpdesk-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/healthz', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend development server (for development)
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-builder
+    container_name: helpdesk-client
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8080/api
+    volumes:
+      - ./src:/app/client/src
+      - ./public:/app/client/public
+      - ./index.html:/app/client/index.html
+    networks:
+      - helpdesk-network
+    command: npm run dev -- --host
+    profiles:
+      - development
+
+volumes:
+  mongo_data:
+    driver: local
+
+networks:
+  helpdesk-network:
+    driver: bridge
